@@ -1,0 +1,16 @@
+{
+  "maxLeverage": 3,
+  "maxPositionSizeUsd": 41130,
+  "maxGrossExposureUsd": 41800,
+  "maxOpenPositions": 1,
+  "dailyLossLimitUsd": 38940,
+  "maxDrawdownPct": 85,
+  "minConfidenceCore": 63,
+  "minConfidenceExternal": 79,
+  "cooldownSecPerSymbol": 45,
+  "maxAtrPct": 3.6,
+  "killSwitchEngaged": false,
+  "liveTradingArmed": true,
+  "executionMode": "semi",
+  "updatedAt": 1777809638710
+}

@@ -1,0 +1,167 @@
+@layer theme, base, components, utilities;
+@import "tailwindcss";
+
+/* ═══════════════════════════════════════════════════════
+   NEXUS OS — DUAL THEME SYSTEM
+   Light (default) = Binance-inspired professional palette
+   Dark = Atmospheric deep navy (classic mode)
+═══════════════════════════════════════════════════════ */
+
+:root {
+  /* === LIGHT THEME (DEFAULT) === */
+  --color-bg:          #F2F4F7;
+  --color-surface:     #FFFFFF;
+  --color-surface-high:#F8FAFC;
+  --color-glass:       rgba(255, 255, 255, 0.85);
+  --color-glass-border:rgba(0, 0, 0, 0.06);
+  --color-border:      #E0E6ED;
+  --color-accent:      #00C9A7;
+  --color-accent-dim:  rgba(0, 201, 167, 0.12);
+  --color-danger:      #F04A5A;
+  --color-bull:        #00C176;
+  --color-bear:        #F04A5A;
+  --color-warning:     #F59E0B;
+  --color-blue:        #3B82F6;
+  --color-purple:      #8B5CF6;
+  --color-text:        #0F1923;
+  --color-text-inv:    #FFFFFF;
+  --color-muted:       #6E7A8A;
+  --color-dim:         rgba(0, 0, 0, 0.08);
+  --color-sidebar:     #FFFFFF;
+  --color-header:      rgba(255, 255, 255, 0.96);
+  --color-header-border: #E0E6ED;
+  --color-grid:        rgba(0, 0, 0, 0.025);
+  --color-nav-active:  rgba(0, 201, 167, 0.10);
+  --color-nav-hover:   rgba(0, 0, 0, 0.04);
+  --color-input-bg:    rgba(0, 0, 0, 0.04);
+  --shadow-card:       0 1px 3px rgba(0,0,0,0.07), 0 4px 16px rgba(0,0,0,0.05);
+  --shadow-sidebar:    1px 0 0 #E0E6ED;
+  --blur-glass:        blur(16px) saturate(1.4);
+  --radius-card:       12px;
+  color-scheme: light;
+}
+
+[data-theme="dark"] {
+  /* === DARK THEME === */
+  --color-bg:          #0C0E14;
+  --color-surface:     #12161E;
+  --color-surface-high:#1A2030;
+  --color-glass:       rgba(255, 255, 255, 0.04);
+  --color-glass-border:rgba(255, 255, 255, 0.08);
+  --color-border:      rgba(255, 255, 255, 0.08);
+  --color-accent:      #00FFB2;
+  --color-accent-dim:  rgba(0, 255, 178, 0.12);
+  --color-danger:      #F04A5A;
+  --color-bull:        #00FFB2;
+  --color-bear:        #F04A5A;
+  --color-warning:     #F59E0B;
+  --color-blue:        #60A5FA;
+  --color-purple:      #A78BFA;
+  --color-text:        #E8EFF9;
+  --color-text-inv:    #000000;
+  --color-muted:       #8A97AD;
+  --color-dim:         rgba(255, 255, 255, 0.08);
+  --color-sidebar:     #0F111A;
+  --color-header:      rgba(12, 14, 20, 0.96);
+  --color-header-border: rgba(255, 255, 255, 0.07);
+  --color-grid:        rgba(255, 255, 255, 0.018);
+  --color-nav-active:  rgba(0, 255, 178, 0.10);
+  --color-nav-hover:   rgba(255, 255, 255, 0.05);
+  --color-input-bg:    rgba(255, 255, 255, 0.04);
+  --shadow-card:       0 1px 3px rgba(0,0,0,0.4), 0 4px 16px rgba(0,0,0,0.25);
+  --shadow-sidebar:    1px 0 0 rgba(255,255,255,0.06);
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  background: var(--color-bg);
+  color: var(--color-text);
+  transition: background 0.2s ease, color 0.2s ease;
+}
+
+body {
+  font-family: "DM Mono", "Menlo", monospace;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+.font-mono {
+  font-family: "DM Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.font-sans {
+  font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* ── Light-mode overrides for dark-hardcoded Tailwind panels ── */
+/* AdminPanel, PortfolioPanel, StrategyPanel are rendered inside .panel-dark,
+   which preserves the dark glass aesthetic regardless of root theme. */
+.panel-dark {
+  color-scheme: dark;
+  --color-bg:          #0C0E14;
+  --color-surface:     #12161E;
+  --color-surface-high:#1A2030;
+  --color-border:      rgba(255, 255, 255, 0.08);
+  --color-accent:      #00FFB2;
+  --color-accent-dim:  rgba(0, 255, 178, 0.12);
+  --color-danger:      #F04A5A;
+  --color-text:        #E8EFF9;
+  --color-muted:       #8A97AD;
+  --color-dim:         rgba(255, 255, 255, 0.08);
+  background: #0C0E14;
+  color: #E8EFF9;
+}
+
+/* Pulse-slow used by the EnterpriseHeader ticker tape. */
+@keyframes pulse-slow {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+@keyframes glow {
+  0%, 100% { box-shadow: 0 0 6px var(--color-accent); }
+  50% { box-shadow: 0 0 14px var(--color-accent), 0 0 28px var(--color-accent-dim); }
+}
+
+@keyframes slideUp {
+  from { transform: translateY(100%); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: scale(0.97); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+@keyframes slideInRight {
+  from { transform: translateX(120%); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+.animate-pulse-slow    { animation: pulse-slow 3s ease-in-out infinite; }
+.animate-glow          { animation: glow 2s ease-in-out infinite; }
+.animate-slide-up      { animation: slideUp 0.3s cubic-bezier(0.16,1,0.3,1) forwards; }
+.animate-fade-in       { animation: fadeIn 0.2s ease forwards; }
+.animate-slide-in-right{ animation: slideInRight 0.25s cubic-bezier(0.16,1,0.3,1) forwards; }
+
+/* Theme-aware scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-muted);
+}

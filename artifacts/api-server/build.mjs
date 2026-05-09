@@ -100,6 +100,10 @@ async function buildAll() {
       "puppeteer",
       "puppeteer-core",
       "electron",
+      "ccxt",
+      "@anthropic-ai/sdk",
+      "stripe",
+      "stripe-replit-sync",
     ],
     sourcemap: "linked",
     plugins: [

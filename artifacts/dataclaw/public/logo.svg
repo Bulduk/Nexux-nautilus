@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 48" fill="none">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#00FFB2"/>
+      <stop offset="100%" stop-color="#00C896"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="6" width="36" height="36" rx="8" fill="url(#g)"/>
+  <path d="M11 32 L11 16 L20 28 L20 16 L29 28 L29 16" stroke="#0b1326" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <text x="48" y="32" font-family="ui-monospace, SFMono-Regular, monospace" font-size="20" font-weight="700" fill="#dae2fd" letter-spacing="2">NEXUS</text>
+  <text x="138" y="32" font-family="ui-monospace, SFMono-Regular, monospace" font-size="20" font-weight="400" fill="#00FFB2" letter-spacing="1">OS</text>
+</svg>

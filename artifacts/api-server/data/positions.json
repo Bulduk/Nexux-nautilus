@@ -1,0 +1,13 @@
+[
+  {
+    "intentId": "int_moppulel_86avkt",
+    "symbol": "ETH/USDT",
+    "side": "BUY",
+    "qty": 0.002155098100065515,
+    "entryPrice": 2320.08,
+    "notionalUsd": 5,
+    "exchange": "paper-sim",
+    "mode": "paper",
+    "openedAt": 1777809458397
+  }
+]
