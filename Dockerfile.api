@@ -1,0 +1,32 @@
+FROM node:22-alpine AS base
+RUN corepack enable && corepack prepare pnpm@latest --activate
+WORKDIR /app
+
+# ── deps ──────────────────────────────────────────────────────────────────
+FROM base AS deps
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY lib/db/package.json                     ./lib/db/
+COPY lib/api-zod/package.json                ./lib/api-zod/
+COPY lib/replit-auth-web/package.json        ./lib/replit-auth-web/
+COPY artifacts/api-server/package.json       ./artifacts/api-server/
+RUN pnpm install --frozen-lockfile --prod
+
+# ── build ─────────────────────────────────────────────────────────────────
+FROM base AS builder
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY lib/                   ./lib/
+COPY artifacts/api-server/  ./artifacts/api-server/
+COPY --from=deps /app/node_modules ./node_modules
+RUN pnpm install --frozen-lockfile
+RUN pnpm --filter @workspace/api-server run build
+
+# ── runtime ───────────────────────────────────────────────────────────────
+FROM node:22-alpine AS runner
+WORKDIR /app
+ENV NODE_ENV=production
+
+COPY --from=builder /app/artifacts/api-server/dist ./dist
+COPY --from=deps    /app/node_modules              ./node_modules
+
+EXPOSE 8080
+CMD ["node", "--enable-source-maps", "./dist/index.mjs"]

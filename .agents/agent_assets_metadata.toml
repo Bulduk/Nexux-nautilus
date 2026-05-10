@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "_UGmwWXqbDkE8Kbe15xjf"
+uri = "file://nexus-nautilus-vps.tar.gz"
+type = "unspecified"
+title = "nexus-nautilus-vps.tar.gz — Full VPS Package"

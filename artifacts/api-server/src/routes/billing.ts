@@ -15,8 +15,6 @@ import {
 
 const router: IRouter = Router();
 
-// Same-origin CSRF guard: state-changing billing routes must originate from
-// our own UI. Stripe never POSTs back to these — it uses /api/stripe/webhook.
 function sameOrigin(req: Request): boolean {
   const allowed = new Set<string>();
   const host = req.get("host");
@@ -24,15 +22,9 @@ function sameOrigin(req: Request): boolean {
     allowed.add(`http://${host}`);
     allowed.add(`https://${host}`);
   }
-  const domains = process.env.REPLIT_DOMAINS?.split(",") ?? [];
-  for (const d of domains) {
-    const t = d.trim();
-    if (t) allowed.add(`https://${t}`);
-  }
   const origin = req.get("origin");
   const referer = req.get("referer");
-  const candidate =
-    origin ?? (referer ? new URL(referer).origin : undefined);
+  const candidate = origin ?? (referer ? new URL(referer).origin : undefined);
   if (!candidate) return false;
   return allowed.has(candidate);
 }
@@ -46,8 +38,8 @@ router.get("/billing/config", async (_req, res) => {
       currencies: ["USD", "EUR", "TRY"],
       intervals: ["monthly", "yearly"],
     });
-  } catch (err: any) {
-    res.status(503).json({ error: "Stripe not configured", detail: err?.message });
+  } catch (err: unknown) {
+    res.status(503).json({ error: "Stripe not configured", detail: (err as Error)?.message });
   }
 });
 
@@ -72,42 +64,42 @@ router.get("/billing/products", requireAuth, async (_req, res) => {
       WHERE p.active = true
       ORDER BY p.id, pr.unit_amount
     `);
-    const productMap = new Map<string, any>();
-    for (const row of result.rows as any[]) {
-      const pid = row.id;
+    const productMap = new Map<string, unknown>();
+    for (const row of result.rows as Record<string, unknown>[]) {
+      const pid = row["id"] as string;
       if (!productMap.has(pid)) {
         productMap.set(pid, {
           id: pid,
-          name: row.name,
-          description: row.description,
-          metadata: row.metadata ?? {},
-          prices: [] as any[],
+          name: row["name"],
+          description: row["description"],
+          metadata: row["metadata"] ?? {},
+          prices: [] as unknown[],
         });
       }
-      if (row.price_id) {
-        productMap.get(pid).prices.push({
-          id: row.price_id,
-          unit_amount: Number(row.unit_amount ?? 0),
-          currency: String(row.currency ?? "").toUpperCase(),
-          recurring: row.recurring,
-          metadata: row.price_metadata ?? {},
+      if (row["price_id"]) {
+        (productMap.get(pid) as { prices: unknown[] }).prices.push({
+          id: row["price_id"],
+          unit_amount: Number(row["unit_amount"] ?? 0),
+          currency: String(row["currency"] ?? "").toUpperCase(),
+          recurring: row["recurring"],
+          metadata: row["price_metadata"] ?? {},
         });
       }
     }
     res.json({ products: Array.from(productMap.values()) });
-  } catch (err: any) {
+  } catch (err: unknown) {
     res.status(503).json({
       error: "Stripe not synced yet",
-      detail: err?.message,
+      detail: (err as Error)?.message,
       hint: "Run scripts/seed-stripe-products.ts first",
     });
   }
 });
 
 const checkoutSchema = z.object({
-  priceId: z.string().startsWith("price_"),
+  priceId:    z.string().startsWith("price_"),
   successUrl: z.string().url().optional(),
-  cancelUrl: z.string().url().optional(),
+  cancelUrl:  z.string().url().optional(),
 });
 
 router.post("/billing/checkout", requireAuth, async (req, res) => {
@@ -125,26 +117,24 @@ router.post("/billing/checkout", requireAuth, async (req, res) => {
   let stripe;
   try {
     stripe = await getUncachableStripeClient();
-  } catch (err: any) {
-    res.status(503).json({ error: "Stripe not configured", detail: err?.message });
+  } catch (err: unknown) {
+    res.status(503).json({ error: "Stripe not configured", detail: (err as Error)?.message });
     return;
   }
 
-  // Find or create Stripe customer (idempotency key prevents duplicate
-  // customers on rapid double-clicks). Always persist the customerId — if
-  // no subscription row exists yet, create a placeholder FREE row.
   const subRows = await db
     .select()
     .from(subscriptionsTable)
     .where(eq(subscriptionsTable.userId, user.id))
     .limit(1);
+
   let customerId = subRows[0]?.stripeCustomerId ?? null;
   if (!customerId) {
     const customer = await stripe.customers.create(
       {
         email: user.email,
         name: user.fullName ?? undefined,
-        metadata: { userId: user.id, replitUserId: user.replitUserId },
+        metadata: { userId: user.id },
       },
       { idempotencyKey: `customer-${user.id}` },
     );
@@ -155,7 +145,6 @@ router.post("/billing/checkout", requireAuth, async (req, res) => {
         .set({ stripeCustomerId: customerId })
         .where(eq(subscriptionsTable.id, subRows[0].id));
     } else {
-      // Bootstrap a FREE row so we never lose the Stripe customer linkage.
       await db.insert(subscriptionsTable).values({
         id: randomUUID(),
         userId: user.id,
@@ -171,7 +160,7 @@ router.post("/billing/checkout", requireAuth, async (req, res) => {
 
   const origin = req.headers.origin || `${req.protocol}://${req.get("host")}`;
   const successUrl = parsed.data.successUrl ?? `${origin}/?billing=success`;
-  const cancelUrl = parsed.data.cancelUrl ?? `${origin}/?billing=cancelled`;
+  const cancelUrl  = parsed.data.cancelUrl  ?? `${origin}/?billing=cancelled`;
 
   const session = await stripe.checkout.sessions.create({
     mode: "subscription",
@@ -182,7 +171,7 @@ router.post("/billing/checkout", requireAuth, async (req, res) => {
     allow_promotion_codes: true,
     client_reference_id: user.id,
     subscription_data: {
-      metadata: { userId: user.id, replitUserId: user.replitUserId },
+      metadata: { userId: user.id },
     },
   });
 
@@ -205,13 +194,15 @@ router.post("/billing/portal", requireAuth, async (req, res) => {
     res.status(400).json({ error: "Henüz aktif aboneliğin yok." });
     return;
   }
+
   let stripe;
   try {
     stripe = await getUncachableStripeClient();
-  } catch (err: any) {
-    res.status(503).json({ error: "Stripe not configured", detail: err?.message });
+  } catch (err: unknown) {
+    res.status(503).json({ error: "Stripe not configured", detail: (err as Error)?.message });
     return;
   }
+
   const origin = req.headers.origin || `${req.protocol}://${req.get("host")}`;
   const session = await stripe.billingPortal.sessions.create({
     customer: customerId,
@@ -239,7 +230,7 @@ router.get("/billing/subscription", requireAuth, async (req, res) => {
         SELECT id, status, current_period_end, cancel_at_period_end
         FROM stripe.subscriptions WHERE id = ${stripeSubId} LIMIT 1
       `);
-      stripeSubscription = (result.rows as any[])[0] ?? null;
+      stripeSubscription = (result.rows as Record<string, unknown>[])[0] ?? null;
     } catch {
       // Stripe schema not migrated yet
     }

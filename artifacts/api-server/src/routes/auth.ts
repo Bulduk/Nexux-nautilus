@@ -1,68 +1,42 @@
-import * as oidc from "openid-client";
 import { Router, type IRouter, type Request, type Response } from "express";
 import { randomUUID } from "node:crypto";
+import bcrypt from "bcrypt";
+import { z } from "zod";
+import { db, usersTable, refreshTokensTable, subscriptionsTable, subscriptionPlansTable } from "@workspace/db";
+import { eq, and, gt } from "drizzle-orm";
 import {
-  GetCurrentAuthUserResponse,
-  ExchangeMobileAuthorizationCodeBody,
-  ExchangeMobileAuthorizationCodeResponse,
-  LogoutMobileSessionResponse,
-} from "@workspace/api-zod";
-import { db, usersTable, subscriptionsTable, subscriptionPlansTable } from "@workspace/db";
-import { eq } from "drizzle-orm";
-import {
-  clearSession,
-  getOidcConfig,
-  getSessionId,
-  createSession,
-  deleteSession,
-  SESSION_COOKIE,
-  SESSION_TTL,
-  ISSUER_URL,
-  type SessionData,
+  signAccessToken,
+  generateRefreshToken,
+  hashRefreshToken,
+  setAccessTokenCookie,
+  setRefreshTokenCookie,
+  clearAuthCookies,
+  getRefreshToken,
+  REFRESH_TOKEN_TTL_SEC,
 } from "../lib/auth";
+import { authMiddleware } from "../middlewares/authMiddleware";
 
-const OIDC_COOKIE_TTL = 10 * 60 * 1000;
+const router: IRouter = Router();
 
+// ── Schemas ─────────────────────────────────────────────────────────────────
+const RegisterSchema = z.object({
+  email:    z.string().email(),
+  password: z.string().min(8),
+  fullName: z.string().max(100).optional(),
+});
+
+const LoginSchema = z.object({
+  email:    z.string().email(),
+  password: z.string().min(1),
+});
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 const OWNER_EMAILS = (process.env.OWNER_EMAILS ?? "")
   .split(",")
   .map((s) => s.trim().toLowerCase())
   .filter(Boolean);
 
-const router: IRouter = Router();
-
-function getOrigin(req: Request): string {
-  const proto = req.headers["x-forwarded-proto"] || "https";
-  const host =
-    req.headers["x-forwarded-host"] || req.headers["host"] || "localhost";
-  return `${proto}://${host}`;
-}
-
-function setSessionCookie(res: Response, sid: string) {
-  res.cookie(SESSION_COOKIE, sid, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: SESSION_TTL,
-  });
-}
-
-function setOidcCookie(res: Response, name: string, value: string) {
-  res.cookie(name, value, {
-    httpOnly: true,
-    secure: true,
-    sameSite: "lax",
-    path: "/",
-    maxAge: OIDC_COOKIE_TTL,
-  });
-}
-
-function getSafeReturnTo(value: unknown): string {
-  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) {
-    return "/";
-  }
-  return value;
-}
+const SALT_ROUNDS = 12;
 
 async function ensureFreeTrialSubscription(userId: string, trialEndsAt: Date): Promise<void> {
   const existing = await db
@@ -93,250 +67,199 @@ async function ensureFreeTrialSubscription(userId: string, trialEndsAt: Date): P
   });
 }
 
-async function upsertUser(claims: Record<string, unknown>) {
-  const replitUserId = claims.sub as string;
-  const email = (claims.email as string | undefined) ?? `${replitUserId}@replit.local`;
-  const firstName = (claims.first_name as string | undefined) ?? null;
-  const lastName = (claims.last_name as string | undefined) ?? null;
-  const fullName = [firstName, lastName].filter(Boolean).join(" ") || null;
-  const avatarUrl = ((claims.profile_image_url ?? claims.picture) as string | undefined) ?? null;
+function issueTokens(res: Response, userId: string, email: string, role: string, plan: string) {
+  const accessToken = signAccessToken({ sub: userId, email, role, plan });
+  const { token: refreshToken, hash } = generateRefreshToken();
+
+  // Persist refresh token hash
+  void db.insert(refreshTokensTable).values({
+    id: randomUUID(),
+    userId,
+    tokenHash: hash,
+    expiresAt: new Date(Date.now() + REFRESH_TOKEN_TTL_SEC * 1000),
+  }).catch(() => {});
+
+  setAccessTokenCookie(res, accessToken);
+  setRefreshTokenCookie(res, refreshToken);
+  return { accessToken, refreshToken };
+}
+
+// ── POST /api/auth/register ──────────────────────────────────────────────────
+router.post("/auth/register", async (req: Request, res: Response) => {
+  const parsed = RegisterSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid payload", issues: parsed.error.issues });
+    return;
+  }
+
+  const { email, password, fullName } = parsed.data;
+  const emailLower = email.toLowerCase();
 
   const existing = await db
-    .select()
+    .select({ id: usersTable.id })
     .from(usersTable)
-    .where(eq(usersTable.replitUserId, replitUserId))
+    .where(eq(usersTable.email, emailLower))
     .limit(1);
 
   if (existing.length > 0) {
-    const user = existing[0]!;
-    void db
-      .update(usersTable)
-      .set({ lastSeenAt: new Date() })
-      .where(eq(usersTable.id, user.id))
-      .catch(() => {});
-    return user;
+    res.status(409).json({ error: "Email already registered" });
+    return;
   }
 
-  const isOwner = OWNER_EMAILS.includes(email.toLowerCase());
-  const role = isOwner ? "OWNER" : "BASIC_USER";
-  const plan = isOwner ? "ENTERPRISE" : "FREE";
-  const planStatus = isOwner ? "active" : "trialing";
-  const trialDays = 7;
-  const trialEndsAt = new Date(Date.now() + trialDays * 24 * 3600 * 1000);
+  const passwordHash = await bcrypt.hash(password, SALT_ROUNDS);
+  const isOwner     = OWNER_EMAILS.includes(emailLower);
+  const role        = isOwner ? "OWNER" : "BASIC_USER";
+  const plan        = isOwner ? "ENTERPRISE" : "FREE";
+  const planStatus  = isOwner ? "active" : "trialing";
+  const trialEndsAt = isOwner ? null : new Date(Date.now() + 7 * 24 * 3600 * 1000);
 
-  const id = randomUUID();
-  const inserted = await db
-    .insert(usersTable)
-    .values({
-      id,
-      replitUserId,
-      email,
-      fullName,
-      avatarUrl,
-      role,
-      plan,
-      planStatus,
-      trialEndsAt: isOwner ? null : trialEndsAt,
-      lastSeenAt: new Date(),
+  const userId = randomUUID();
+  await db.insert(usersTable).values({
+    id: userId,
+    email: emailLower,
+    passwordHash,
+    fullName: fullName ?? null,
+    role,
+    plan,
+    planStatus,
+    trialEndsAt,
+    lastSeenAt: new Date(),
+  });
+
+  if (!isOwner && trialEndsAt) {
+    await ensureFreeTrialSubscription(userId, trialEndsAt);
+  }
+
+  issueTokens(res, userId, emailLower, role, plan);
+  res.status(201).json({ ok: true });
+});
+
+// ── POST /api/auth/login ─────────────────────────────────────────────────────
+router.post("/auth/login", async (req: Request, res: Response) => {
+  const parsed = LoginSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({ error: "Invalid payload" });
+    return;
+  }
+
+  const { email, password } = parsed.data;
+  const emailLower = email.toLowerCase();
+
+  const rows = await db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.email, emailLower))
+    .limit(1);
+
+  const user = rows[0];
+  if (!user || !user.passwordHash) {
+    // Constant-time guard
+    await bcrypt.hash("guard", 1);
+    res.status(401).json({ error: "Invalid email or password" });
+    return;
+  }
+
+  const match = await bcrypt.compare(password, user.passwordHash);
+  if (!match) {
+    res.status(401).json({ error: "Invalid email or password" });
+    return;
+  }
+
+  if (!user.isActive) {
+    res.status(403).json({ error: "Account suspended" });
+    return;
+  }
+
+  void db.update(usersTable).set({ lastSeenAt: new Date() }).where(eq(usersTable.id, user.id)).catch(() => {});
+
+  issueTokens(res, user.id, user.email, user.role, user.plan);
+  res.json({ ok: true, user: { id: user.id, email: user.email, fullName: user.fullName, role: user.role, plan: user.plan } });
+});
+
+// ── POST /api/auth/refresh ───────────────────────────────────────────────────
+router.post("/auth/refresh", async (req: Request, res: Response) => {
+  const rawToken = getRefreshToken(req);
+  if (!rawToken) {
+    res.status(401).json({ error: "No refresh token" });
+    return;
+  }
+
+  const hash = hashRefreshToken(rawToken);
+  const now  = new Date();
+
+  const tokenRows = await db
+    .select()
+    .from(refreshTokensTable)
+    .where(
+      and(
+        eq(refreshTokensTable.tokenHash, hash),
+        gt(refreshTokensTable.expiresAt, now),
+      ),
+    )
+    .limit(1);
+
+  if (tokenRows.length === 0) {
+    clearAuthCookies(res);
+    res.status(401).json({ error: "Refresh token invalid or expired" });
+    return;
+  }
+
+  const tokenRow = tokenRows[0]!;
+
+  // Rotate: delete old, issue new
+  await db.delete(refreshTokensTable).where(eq(refreshTokensTable.id, tokenRow.id));
+
+  const userRows = await db
+    .select()
+    .from(usersTable)
+    .where(eq(usersTable.id, tokenRow.userId))
+    .limit(1);
+
+  const user = userRows[0];
+  if (!user || !user.isActive) {
+    clearAuthCookies(res);
+    res.status(401).json({ error: "User not found or suspended" });
+    return;
+  }
+
+  issueTokens(res, user.id, user.email, user.role, user.plan);
+  res.json({ ok: true });
+});
+
+// ── POST /api/auth/logout ────────────────────────────────────────────────────
+router.post("/auth/logout", authMiddleware, async (req: Request, res: Response) => {
+  const rawToken = getRefreshToken(req);
+  if (rawToken) {
+    const hash = hashRefreshToken(rawToken);
+    await db.delete(refreshTokensTable).where(eq(refreshTokensTable.tokenHash, hash)).catch(() => {});
+  }
+  clearAuthCookies(res);
+  res.json({ ok: true });
+});
+
+// ── GET /api/auth/user ───────────────────────────────────────────────────────
+router.get("/auth/user", authMiddleware, async (req: Request, res: Response) => {
+  if (!req.jwtUser) {
+    res.json({ user: null });
+    return;
+  }
+
+  const rows = await db
+    .select({
+      id: usersTable.id,
+      email: usersTable.email,
+      fullName: usersTable.fullName,
+      avatarUrl: usersTable.avatarUrl,
+      role: usersTable.role,
+      plan: usersTable.plan,
+      planStatus: usersTable.planStatus,
+      trialEndsAt: usersTable.trialEndsAt,
     })
-    .onConflictDoNothing({ target: usersTable.replitUserId })
-    .returning();
+    .from(usersTable)
+    .where(eq(usersTable.id, req.jwtUser.sub))
+    .limit(1);
 
-  let user = inserted[0];
-  if (!user) {
-    const refetch = await db
-      .select()
-      .from(usersTable)
-      .where(eq(usersTable.replitUserId, replitUserId))
-      .limit(1);
-    user = refetch[0]!;
-  }
-
-  if (!isOwner) {
-    await ensureFreeTrialSubscription(user.id, trialEndsAt);
-  }
-
-  return user;
-}
-
-router.get("/auth/user", (req: Request, res: Response) => {
-  res.json(
-    GetCurrentAuthUserResponse.parse({
-      user: req.isAuthenticated() ? req.user : null,
-    }),
-  );
-});
-
-router.get("/login", async (req: Request, res: Response) => {
-  const config = await getOidcConfig();
-  const callbackUrl = `${getOrigin(req)}/api/callback`;
-  const returnTo = getSafeReturnTo(req.query.returnTo);
-
-  const state = oidc.randomState();
-  const nonce = oidc.randomNonce();
-  const codeVerifier = oidc.randomPKCECodeVerifier();
-  const codeChallenge = await oidc.calculatePKCECodeChallenge(codeVerifier);
-
-  const redirectTo = oidc.buildAuthorizationUrl(config, {
-    redirect_uri: callbackUrl,
-    scope: "openid email profile offline_access",
-    code_challenge: codeChallenge,
-    code_challenge_method: "S256",
-    prompt: "login consent",
-    state,
-    nonce,
-  });
-
-  setOidcCookie(res, "code_verifier", codeVerifier);
-  setOidcCookie(res, "nonce", nonce);
-  setOidcCookie(res, "state", state);
-  setOidcCookie(res, "return_to", returnTo);
-
-  res.redirect(redirectTo.href);
-});
-
-router.get("/callback", async (req: Request, res: Response) => {
-  const config = await getOidcConfig();
-  const callbackUrl = `${getOrigin(req)}/api/callback`;
-
-  const codeVerifier = req.cookies?.code_verifier;
-  const nonce = req.cookies?.nonce;
-  const expectedState = req.cookies?.state;
-
-  if (!codeVerifier || !expectedState) {
-    res.redirect("/api/login");
-    return;
-  }
-
-  const currentUrl = new URL(
-    `${callbackUrl}?${new URL(req.url, `http://${req.headers.host}`).searchParams}`,
-  );
-
-  let tokens: oidc.TokenEndpointResponse & oidc.TokenEndpointResponseHelpers;
-  try {
-    tokens = await oidc.authorizationCodeGrant(config, currentUrl, {
-      pkceCodeVerifier: codeVerifier,
-      expectedNonce: nonce,
-      expectedState,
-      idTokenExpected: true,
-    });
-  } catch {
-    res.redirect("/api/login");
-    return;
-  }
-
-  const returnTo = getSafeReturnTo(req.cookies?.return_to);
-
-  res.clearCookie("code_verifier", { path: "/" });
-  res.clearCookie("nonce", { path: "/" });
-  res.clearCookie("state", { path: "/" });
-  res.clearCookie("return_to", { path: "/" });
-
-  const claims = tokens.claims();
-  if (!claims) {
-    res.redirect("/api/login");
-    return;
-  }
-
-  const dbUser = await upsertUser(claims as unknown as Record<string, unknown>);
-
-  const now = Math.floor(Date.now() / 1000);
-  const sessionData: SessionData = {
-    user: {
-      id: dbUser.replitUserId,
-      email: dbUser.email,
-      firstName: dbUser.fullName?.split(" ")[0] ?? null,
-      lastName: dbUser.fullName?.split(" ").slice(1).join(" ") || null,
-      profileImageUrl: dbUser.avatarUrl,
-    },
-    access_token: tokens.access_token,
-    refresh_token: tokens.refresh_token,
-    expires_at: tokens.expiresIn() ? now + tokens.expiresIn()! : claims.exp,
-  };
-
-  const sid = await createSession(sessionData);
-  setSessionCookie(res, sid);
-  res.redirect(returnTo);
-});
-
-router.get("/logout", async (req: Request, res: Response) => {
-  const config = await getOidcConfig();
-  const origin = getOrigin(req);
-
-  const sid = getSessionId(req);
-  await clearSession(res, sid);
-
-  const endSessionUrl = oidc.buildEndSessionUrl(config, {
-    client_id: process.env.REPL_ID!,
-    post_logout_redirect_uri: origin,
-  });
-
-  res.redirect(endSessionUrl.href);
-});
-
-router.post(
-  "/mobile-auth/token-exchange",
-  async (req: Request, res: Response) => {
-    const parsed = ExchangeMobileAuthorizationCodeBody.safeParse(req.body);
-    if (!parsed.success) {
-      res.status(400).json({ error: "Missing or invalid required parameters" });
-      return;
-    }
-
-    const { code, code_verifier, redirect_uri, state, nonce } = parsed.data;
-
-    try {
-      const config = await getOidcConfig();
-
-      const callbackUrl = new URL(redirect_uri);
-      callbackUrl.searchParams.set("code", code);
-      callbackUrl.searchParams.set("state", state);
-      callbackUrl.searchParams.set("iss", ISSUER_URL);
-
-      const tokens = await oidc.authorizationCodeGrant(config, callbackUrl, {
-        pkceCodeVerifier: code_verifier,
-        expectedNonce: nonce ?? undefined,
-        expectedState: state,
-        idTokenExpected: true,
-      });
-
-      const claims = tokens.claims();
-      if (!claims) {
-        res.status(401).json({ error: "No claims in ID token" });
-        return;
-      }
-
-      const dbUser = await upsertUser(claims as unknown as Record<string, unknown>);
-
-      const now = Math.floor(Date.now() / 1000);
-      const sessionData: SessionData = {
-        user: {
-          id: dbUser.replitUserId,
-          email: dbUser.email,
-          firstName: dbUser.fullName?.split(" ")[0] ?? null,
-          lastName: dbUser.fullName?.split(" ").slice(1).join(" ") || null,
-          profileImageUrl: dbUser.avatarUrl,
-        },
-        access_token: tokens.access_token,
-        refresh_token: tokens.refresh_token,
-        expires_at: tokens.expiresIn() ? now + tokens.expiresIn()! : claims.exp,
-      };
-
-      const sid = await createSession(sessionData);
-      res.json(ExchangeMobileAuthorizationCodeResponse.parse({ token: sid }));
-    } catch (err) {
-      req.log.error({ err }, "Mobile token exchange error");
-      res.status(500).json({ error: "Token exchange failed" });
-    }
-  },
-);
-
-router.post("/mobile-auth/logout", async (req: Request, res: Response) => {
-  const sid = getSessionId(req);
-  if (sid) {
-    await deleteSession(sid);
-  }
-  res.json(LogoutMobileSessionResponse.parse({ success: true }));
+  res.json({ user: rows[0] ?? null });
 });
 
 export default router;
